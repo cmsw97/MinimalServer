@@ -11,13 +11,6 @@ $app = new FrameworkX\App();
 
 $urlBase = "/min/public/index.php";
 
-$app->post($urlBase . '/login', new Ts\DataController());
-
-$app->get($urlBase . '/users/{name}', function (Psr\Http\Message\ServerRequestInterface $request)
-{
-	return React\Http\Message\Response::plaintext(
-		"Hello " . $request->getAttribute('name') . "!\n"
-	);
-});
+$app->post($urlBase . '/', new Ts\DataController());
 
 $app->run();

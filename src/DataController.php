@@ -4,8 +4,10 @@ namespace Ts;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
+use Exception;
 use MessagePack\Packer;
 use PDO;
+use PDOException;
 use Psr\Http\Message\ServerRequestInterface;
 use React\Http\Message\Response;
 
@@ -97,17 +99,36 @@ class DataController
 		return $result;
 	}
 
-	/** @param array<mixed> $arguments */
-	private function performAction(?string $action, ?array $arguments): void
+	/** @param ?array<string, mixed> $action */
+	private function performAction(?array $action): ?string
 	{
-		if ($action === "post")
+		if($action === null)
 		{
-			// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el objeto.
-			$this->post($arguments[0], $arguments[1]);
+			return null;
+		}
+
+		/** @var string */
+		$verb = $action["verb"];
+		/** @var array<mixed> */
+		$arguments = $action["arguments"];
+		
+		try
+		{
+			if ($verb === "post")
+			{
+				// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el objeto.
+				$this->post($arguments[0], $arguments[1]);
+			}
+			return null;
+		}
+		catch (PDOException $pdoException)
+		{
+			return $pdoException->getMessage();
 		}
 	}
 
 	/**
+	 * Crea un nuevo row en la base de datos.
 	 * @param array<string,mixed> $dbObject
 	 */
 	private function post(string $tableName, array $dbObject): bool
@@ -166,13 +187,17 @@ class DataController
 		}
 
 		// Si recibió alguna acción, entonces hay que crear/editar/borrar algo.
-		$this->performAction($requestBody["action"], $requestBody["arguments"]);
+		$actionResult = $this->performAction($requestBody["action"]);
+
+		// Obtiene el contenido de las tablas que se devolverá al cliente.
+		$serverTables = $this->getServerTables($requestBody["tables"], $eof);
 
 		$response = [];
-		$response["Version"] = 1;
-		$response["Message"] = null;
-		$response["Tables"] = $this->getServerTables($requestBody["tables"], $eof);
+		$response["ActionResult"] = $actionResult;
 		$response["EOF"] = $eof;
+		$response["Message"] = null;
+		$response["Tables"] = $serverTables;
+		$response["Version"] = 1;
 
 		$packer = new Packer();
 		$packedResponse = $packer->pack($response);

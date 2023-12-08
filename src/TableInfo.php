@@ -15,10 +15,43 @@ class TableInfo
 	];
 
 	/**
-	 * @return array<string>
+	 * @return string[]
 	 */
-	public static function clientTableNames(): array
+	public static function getPublicTableNames(): array
 	{
 		return array_keys(self::$clientTables);
+	}
+
+	public static function isPublicTable(string $tableName): bool
+	{
+		return array_key_exists($tableName, self::$clientTables);
+	}
+
+	/**
+	 * Se usa como medida de seguridad para que el cliente no intente hacer SQL inyection.
+	 */
+	public static function isValidColumnName(string $columnName): bool
+	{
+		return ctype_alnum($columnName);
+	}
+
+	/**
+	 * Devuelve true si la columna tiene un nombre que se considera privado,
+	 * es decir, que el cliente no tiene permitido alterar.
+	 */
+	public static function isPrivateColumn(string $columnName): bool
+	{
+		$columnName = strtolower(trim($columnName));
+		return $columnName === "idaccount";
+	}
+
+	/**
+	 * Devuelve true si la columna tiene un nombre que el cliente tiene permitido leer,
+	 * pero no escribir.
+	 */
+	public static function isReadOnlyColumn(string $columnName): bool
+	{
+		$columnName = strtolower(trim($columnName));
+		return $columnName === "id";
 	}
 }

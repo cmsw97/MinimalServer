@@ -4,36 +4,37 @@ namespace Ts;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use Exception;
 use MessagePack\Packer;
 use PDO;
 use Psr\Http\Message\ServerRequestInterface;
 use React\Http\Message\Response;
-use stdClass;
 
 class DataController
 {
 	private Db $db;
 
+	private int $idAccount;
+
 	// Máximo de rows que se permite enviar al cliente en una petición.
 	const MAX_RECORDS_PER_TABLE = 2;
 
-	private static function shouldExcludeColumn(string $columnName): bool
+	public function __construct()
 	{
-		return $columnName === "idAccount";
+		$this->db = new Db();
 	}
 
 	/**
+	 * @param array<string, int> $clientTables
 	 * @return array<array<string, mixed>>
 	 */
-	private function getServerTables(int $idAccount, stdClass $clientTables, ?bool &$outEOF): array
+	private function getServerTables(array $clientTables, ?bool &$outEOF): array
 	{
 		$result = [];
 		$outEOF = true;
 
-		foreach (TableInfo::clientTableNames() as $tableName)
+		foreach (TableInfo::getPublicTableNames() as $tableName)
 		{
-			$clientMaxId = $clientTables->{$tableName};
+			$clientMaxId = $clientTables[$tableName];
 			$serverMaxId = $this->db->executeScalar("SELECT MAX(id) FROM {$tableName};") ?? 0;
 
 			if ($clientMaxId < $serverMaxId)
@@ -50,7 +51,7 @@ class DataController
 					"SELECT * FROM {$tableName} " .
 						"WHERE idAccount = :idAccount AND id > :id " .
 						"ORDER BY id LIMIT " . (self::MAX_RECORDS_PER_TABLE + 1),
-					[":idAccount" => $idAccount, ":id" => $clientMaxId]
+					[":idAccount" => $this->idAccount, ":id" => $clientMaxId]
 				);
 
 				$columnCount = $statement->columnCount();
@@ -61,7 +62,7 @@ class DataController
 				for ($i = 0; $i < $columnCount; $i++)
 				{
 					$name = $statement->getColumnMeta($i)["name"];
-					if (!self::shouldExcludeColumn($name))
+					if (!TableInfo::isPrivateColumn($name))
 					{
 						$columnIndexes[] = $i;
 						$table["Columns"][] = $name;
@@ -96,11 +97,58 @@ class DataController
 		return $result;
 	}
 
+	/** @param array<mixed> $arguments */
+	private function performAction(?string $action, ?array $arguments): void
+	{
+		if ($action === "post")
+		{
+			// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el objeto.
+			$this->post($arguments[0], $arguments[1]);
+		}
+	}
+
+	/**
+	 * @param array<string,mixed> $dbObject
+	 */
+	private function post(string $tableName, array $dbObject): bool
+	{
+		if (!TableInfo::isPublicTable($tableName))
+		{
+			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso!
+			return false;
+		}
+
+		$columns = ["idAccount"];
+		$parameters = [":idAccount" => $this->idAccount];
+
+		foreach ($dbObject as $name => $value)
+		{
+			if (!TableInfo::isValidColumnName($name) || TableInfo::isPrivateColumn($name))
+			{
+				// ¡El cliente está queriendo alterar una columna para la que no tiene permiso
+				// o hasta queriendo hacer SQL inyection!.
+				return false;
+			}
+
+			if (!TableInfo::isReadOnlyColumn($name))
+			{
+				$columns[] = $name;
+				$parameters[":{$name}"] = $value;
+			}
+		}
+
+		$query = "INSERT INTO {$tableName} " .
+			"(" . implode(",", $columns) . ") VALUES (" . implode(",", array_keys($parameters)) . ");";
+
+		$statement = $this->db->execute($query, $parameters);
+		return $statement->rowCount() === 1;
+	}
+
 	public function __invoke(ServerRequestInterface $request): Response
 	{
-		$data = json_decode($request->getBody());
+		$requestBody = json_decode($request->getBody(), true);
 
-		if ($data->version !== 1)
+		if ($requestBody["version"] !== 1)
 		{
 			// Versión incorrecta.
 			return new Response(
@@ -109,11 +157,7 @@ class DataController
 			);
 		}
 
-		$this->db = new Db();
-
-		$user = $this->authenticateUser($request);
-
-		if (!$user)
+		if (!$this->authenticateUser($request))
 		{
 			return new Response(
 				status: Response::STATUS_UNAUTHORIZED,
@@ -121,10 +165,13 @@ class DataController
 			);
 		}
 
+		// Si recibió alguna acción, entonces hay que crear/editar/borrar algo.
+		$this->performAction($requestBody["action"], $requestBody["arguments"]);
+
 		$response = [];
 		$response["Version"] = 1;
 		$response["Message"] = null;
-		$response["Tables"] = $this->getServerTables($user->idAccount, $data->tables, $eof);
+		$response["Tables"] = $this->getServerTables($requestBody["tables"], $eof);
 		$response["EOF"] = $eof;
 
 		$packer = new Packer();
@@ -135,16 +182,16 @@ class DataController
 
 	/**
 	 * Recibe la request, y si el usuario y contraseña son correctos
-	 * entonces devuelve el usuario de la base datos, si no, devuelve null.
+	 * entonces inicializa la propiedad $idAccount y devuelve true.
 	 */
-	private function authenticateUser(ServerRequestInterface $request): ?stdClass
+	private function authenticateUser(ServerRequestInterface $request): bool
 	{
 		$authHeader = explode(" ", $request->getHeader("authorization")[0]);
 
 		// El primer elemento del header debe ser el esquema "Basic".
 		if ($authHeader[0] !== "Basic")
 		{
-			return null;
+			return false;
 		}
 
 		// El segundo elemento debe una cadena base64 con usuario:contraseña,
@@ -160,9 +207,10 @@ class DataController
 
 		if ($user && password_verify($credentials[1], $user->password))
 		{
-			return $user;
+			$this->idAccount = $user->idAccount;
+			return true;
 		}
 
-		return null;
+		return false;
 	}
 }

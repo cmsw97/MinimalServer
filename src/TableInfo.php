@@ -4,14 +4,33 @@ namespace Ts;
 
 class TableInfo
 {
-	// Tablas que se pueden enviar al cliente.
-	// Los identificadores tienen que replicarse en TableInfo.cs TableIdentifier.
 	// Nunca puede haber cambios.
-	// Siempre deben estar en minúsculas.
-	/** @var array<string, int> */
-	private static array $clientTables = [
-		"branch" => 1,
-		"del" => 2,
+	const ID_ERASE = 0;
+	const ID_MODIFY = 1;
+	// -
+	const ID_BRANCH = 2;
+
+	/**
+	 * Tablas que el cliente puede ver.
+	 * Los ids tienen que ser iguales en C# en el IdTableAttribute de cada clase que represente una tabla.
+	 * Siempre deben estar en minúsculas.
+	 * @var array<string, int>
+	 */
+	private static array $publicTables = [
+		"erase" => self::ID_ERASE,
+		"modify" => self::ID_MODIFY,
+
+		"branch" => self::ID_BRANCH,
+	];
+
+	/**
+	 * Tablas que el cliente no puede editar / borrar.
+	 * Siempre deben estar en minúsculas.
+	 * @var string[]
+	 */
+	private static array $readOnlyTables = [
+		"erase",
+		"modify"
 	];
 
 	/**
@@ -19,12 +38,17 @@ class TableInfo
 	 */
 	public static function getPublicTableNames(): array
 	{
-		return array_keys(self::$clientTables);
+		return array_keys(self::$publicTables);
 	}
 
 	public static function isPublicTable(string $tableName): bool
 	{
-		return array_key_exists($tableName, self::$clientTables);
+		return array_key_exists(trim(strtolower($tableName)), self::$publicTables);
+	}
+
+	public static function isReadOnlyTable(string $tableName): bool
+	{
+		return in_array(trim(strtolower($tableName)), self::$readOnlyTables);
 	}
 
 	/**
@@ -37,11 +61,11 @@ class TableInfo
 
 	/**
 	 * Devuelve true si la columna tiene un nombre que se considera privado,
-	 * es decir, que el cliente no tiene permitido alterar.
+	 * es decir, que el cliente no tiene permitido ver / editar.
 	 */
 	public static function isPrivateColumn(string $columnName): bool
 	{
-		$columnName = strtolower(trim($columnName));
+		$columnName = trim(strtolower($columnName));
 		return $columnName === "idaccount";
 	}
 
@@ -51,7 +75,12 @@ class TableInfo
 	 */
 	public static function isReadOnlyColumn(string $columnName): bool
 	{
-		$columnName = strtolower(trim($columnName));
+		$columnName = trim(strtolower($columnName));
 		return $columnName === "id";
+	}
+
+	public static function getTableId(string $tableName): int
+	{
+		return self::$publicTables[trim(strtolower($tableName))];
 	}
 }

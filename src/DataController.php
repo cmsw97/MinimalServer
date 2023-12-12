@@ -5,6 +5,7 @@ namespace Ts;
 require_once __DIR__ . '/../vendor/autoload.php';
 
 use Exception;
+use LengthException;
 use MessagePack\Packer;
 use PDO;
 use PDOException;
@@ -29,7 +30,7 @@ class DataController
 	 * @param array<string, int> $clientTables
 	 * @return array<array<string, mixed>>
 	 */
-	private function getServerTables(array $clientTables, ?bool &$outEOF): array
+	private function getResponseTables(array $clientTables, ?bool &$outEOF): array
 	{
 		$result = [];
 		$outEOF = true;
@@ -102,7 +103,7 @@ class DataController
 	/** @param ?array<string, mixed> $action */
 	private function performAction(?array $action): ?string
 	{
-		if($action === null)
+		if ($action === null)
 		{
 			return null;
 		}
@@ -111,13 +112,18 @@ class DataController
 		$verb = $action["verb"];
 		/** @var array<mixed> */
 		$arguments = $action["arguments"];
-		
+
 		try
 		{
 			if ($verb === "post")
 			{
 				// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el objeto.
 				$this->post($arguments[0], $arguments[1]);
+			}
+			elseif ($verb === "delete")
+			{
+				// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el id.
+				$this->delete($arguments[0], $arguments[1]);
 			}
 			return null;
 		}
@@ -127,15 +133,68 @@ class DataController
 		}
 	}
 
+	private function delete(string $tableName, int $id): bool
+	{
+		if (!TableInfo::isPublicTable($tableName) || TableInfo::isReadOnlyTable($tableName))
+		{
+			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso,
+			// o hasta queriendo hacer SQL injection!
+			return false;
+		}
+
+		if (!$this->db->beginTransaction())
+		{
+			// Quién sabe por qué podría pasar esto, better safe than sorry.
+			return false;
+		}
+
+		try
+		{
+			$query = "DELETE FROM {$tableName} WHERE idAccount = :idAccount AND id = :id;";
+			$parameters = [":idAccount" => $this->idAccount, ":id" => $id];
+			$statement = $this->db->execute($query, $parameters);
+			if ($statement->rowCount() !== 1)
+			{
+				// A lo mejor ya no existe.
+				throw new LengthException();
+			}
+
+			$query = "INSERT INTO erase (idAccount, tableId, idRow) VALUES (:idAccount, :tableId, :idRow);";
+			$parameters = [
+				":idAccount" => $this->idAccount,
+				":tableId" => TableInfo::getTableId($tableName),
+				":idRow" => $id
+			];
+			$statement = $this->db->execute($query, $parameters);
+			if ($statement->rowCount() !== 1)
+			{
+				throw new LengthException();
+			}
+
+			$this->db->commit();
+
+			$succeded = true;
+		}
+		catch (Exception $ex)
+		{
+			$this->db->rollBack();
+
+			$succeded = false;
+		}
+
+		return $succeded;
+	}
+
 	/**
 	 * Crea un nuevo row en la base de datos.
 	 * @param array<string,mixed> $dbObject
 	 */
 	private function post(string $tableName, array $dbObject): bool
 	{
-		if (!TableInfo::isPublicTable($tableName))
+		if (!TableInfo::isPublicTable($tableName) || TableInfo::isReadOnlyTable($tableName))
 		{
-			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso!
+			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso,
+			// o hasta queriendo hacer SQL injection!
 			return false;
 		}
 
@@ -190,13 +249,13 @@ class DataController
 		$actionResult = $this->performAction($requestBody["action"]);
 
 		// Obtiene el contenido de las tablas que se devolverá al cliente.
-		$serverTables = $this->getServerTables($requestBody["tables"], $eof);
+		$tables = $this->getResponseTables($requestBody["tables"], $eof);
 
 		$response = [];
 		$response["ActionResult"] = $actionResult;
 		$response["EOF"] = $eof;
 		$response["Message"] = null;
-		$response["Tables"] = $serverTables;
+		$response["Tables"] = $tables;
 		$response["Version"] = 1;
 
 		$packer = new Packer();

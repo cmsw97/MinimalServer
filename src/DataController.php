@@ -4,13 +4,12 @@ namespace Ts;
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
-use Exception;
-use LengthException;
+use AssertionError;
 use MessagePack\Packer;
 use PDO;
-use PDOException;
 use Psr\Http\Message\ServerRequestInterface;
 use React\Http\Message\Response;
+use Throwable;
 
 class DataController
 {
@@ -115,100 +114,105 @@ class DataController
 
 		try
 		{
-			if ($verb === "post")
+			if ($verb === "POST")
 			{
 				// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el objeto.
 				$this->post($arguments[0], $arguments[1]);
 			}
-			elseif ($verb === "delete")
+			elseif ($verb === "DELETE")
 			{
 				// Hay que crear un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el id.
 				$this->delete($arguments[0], $arguments[1]);
 			}
+			elseif ($verb === "PUT")
+			{
+				// Hay que modificar un objeto. En el 1er argumento está el nombre de la tabla, y en el 2o el id.
+				$this->put($arguments[0], $arguments[1]);
+			}
 			return null;
 		}
-		catch (PDOException $pdoException)
+		catch (Throwable $throwable)
 		{
-			return $pdoException->getMessage();
+			return $throwable->getMessage();
 		}
 	}
 
-	private function delete(string $tableName, int $id): bool
+	/**
+	 * Si assertion es false entonces lanza la excepción.
+	 */
+	private static function assertEx(bool $assertion, callable|string $else): void
 	{
-		if (!TableInfo::isPublicTable($tableName) || TableInfo::isReadOnlyTable($tableName))
+		if (!$assertion)
 		{
-			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso,
-			// o hasta queriendo hacer SQL injection!
-			return false;
+			if (is_string($else))
+			{
+				throw new AssertionError($else);
+			}
+			else
+			{
+				$else();
+			}
 		}
+	}
+
+	private function delete(string $tableName, int $id): void
+	{
+		self::assertEx(
+			TableInfo::isPublicTable($tableName) && !TableInfo::isReadOnlyTable($tableName),
+			fn () => throw new SecurityException()	// ¡Está intentando acceder a una tabla a la que no tiene permiso!
+		);
 
 		if (!$this->db->beginTransaction())
 		{
 			// Quién sabe por qué podría pasar esto, better safe than sorry.
-			return false;
+			return;
 		}
 
 		try
 		{
+			// Borra el registro.
 			$query = "DELETE FROM {$tableName} WHERE idAccount = :idAccount AND id = :id;";
 			$parameters = [":idAccount" => $this->idAccount, ":id" => $id];
 			$statement = $this->db->execute($query, $parameters);
-			if ($statement->rowCount() !== 1)
-			{
-				// A lo mejor ya no existe.
-				throw new LengthException();
-			}
+			self::assertEx($statement->rowCount() === 1, "Nothing deleted, perhaps it not existed");
 
-			$query = "INSERT INTO erase (idAccount, tableId, idRow) VALUES (:idAccount, :tableId, :idRow);";
+			// Inserta un registro en la tabla 'deletion' indicando que ya se borró.
+			$query = "INSERT INTO deletion (idAccount, tableId, idRow) VALUES (:idAccount, :tableId, :idRow);";
 			$parameters = [
 				":idAccount" => $this->idAccount,
 				":tableId" => TableInfo::getTableId($tableName),
 				":idRow" => $id
 			];
 			$statement = $this->db->execute($query, $parameters);
-			if ($statement->rowCount() !== 1)
-			{
-				throw new LengthException();
-			}
+			self::assertEx($statement->rowCount() === 1, "Couldn't create deletion record");
 
 			$this->db->commit();
-
-			$succeded = true;
 		}
-		catch (Exception $ex)
+		catch (Throwable $throwable)
 		{
 			$this->db->rollBack();
 
-			$succeded = false;
+			throw $throwable;
 		}
-
-		return $succeded;
 	}
 
 	/**
 	 * Crea un nuevo row en la base de datos.
 	 * @param array<string,mixed> $dbObject
 	 */
-	private function post(string $tableName, array $dbObject): bool
+	private function post(string $tableName, array $dbObject): void
 	{
-		if (!TableInfo::isPublicTable($tableName) || TableInfo::isReadOnlyTable($tableName))
-		{
-			// ¡El cliente está queriendo alterar una tabla para la que no tiene permiso,
-			// o hasta queriendo hacer SQL injection!
-			return false;
-		}
-
-		$columns = ["idAccount"];
-		$parameters = [":idAccount" => $this->idAccount];
+		self::assertEx(
+			TableInfo::isPublicTable($tableName) && !TableInfo::isReadOnlyTable($tableName),
+			fn () => throw new SecurityException()	// ¡Está intentando acceder a una tabla a la que no tiene permiso!
+		);
 
 		foreach ($dbObject as $name => $value)
 		{
-			if (!TableInfo::isValidColumnName($name) || TableInfo::isPrivateColumn($name))
-			{
-				// ¡El cliente está queriendo alterar una columna para la que no tiene permiso
-				// o hasta queriendo hacer SQL inyection!.
-				return false;
-			}
+			self::assertEx(
+				TableInfo::isValidColumnName($name) && !TableInfo::isPrivateColumn($name),
+				fn () => throw new SecurityException() // ¡Está intentando acceder a una columna a la que no tiene permiso!
+			);
 
 			if (!TableInfo::isReadOnlyColumn($name))
 			{
@@ -217,11 +221,75 @@ class DataController
 			}
 		}
 
+		// Crea el registro.
+		$columns[] = "idAccount";
+		$parameters[":idAccount"] = $this->idAccount;
 		$query = "INSERT INTO {$tableName} " .
 			"(" . implode(",", $columns) . ") VALUES (" . implode(",", array_keys($parameters)) . ");";
-
 		$statement = $this->db->execute($query, $parameters);
-		return $statement->rowCount() === 1;
+		self::assertEx($statement->rowCount() === 1, "Couldn't create record");
+	}
+
+	/**
+	 * Crea un nuevo row en la base de datos.
+	 * @param array<string,mixed> $dbObject
+	 */
+	private function put(string $tableName, array $dbObject): void
+	{
+		self::assertEx(
+			TableInfo::isPublicTable($tableName) && !TableInfo::isReadOnlyTable($tableName),
+			fn () => throw new SecurityException()	// ¡Está intentando acceder a una tabla a la que no tiene permiso!
+		);
+
+		if (!$this->db->beginTransaction())
+		{
+			// Quién sabe por qué podría pasar esto, better safe than sorry.
+			return;
+		}
+
+		try
+		{
+			// Actualiza el registro.
+			$parameters = [];
+			$query = "UPDATE {$tableName} SET ";
+			foreach ($dbObject as $name => $value)
+			{
+				self::assertEx(
+					TableInfo::isValidColumnName($name) && !TableInfo::isPrivateColumn($name),
+					fn () => throw new SecurityException() // ¡Está intentando acceder a una columna a la que no tiene permiso!
+				);
+
+				if (!TableInfo::isReadOnlyColumn($name))
+				{
+					$query .= $name . " = :{$name}, ";
+					$parameters[":{$name}"] = $value;
+				}
+			}
+			$query = rtrim($query, ", ");
+			$query .= " WHERE id = :id AND idAccount = :idAccount;";
+			$parameters[":id"] = $dbObject["id"];
+			$parameters[":idAccount"] = $this->idAccount;
+			$statement = $this->db->execute($query, $parameters);
+			self::assertEx($statement->rowCount() === 1, "Nothing updated, perhaps it not existed");
+
+			// Inserta un registro en la tabla 'edition' indicando que sufrió cambios.
+			$query = "INSERT INTO edition (idAccount, tableId, idRow) VALUES (:idAccount, :tableId, :idRow);";
+			$parameters = [
+				":idAccount" => $this->idAccount,
+				":tableId" => TableInfo::getTableId($tableName),
+				":idRow" => $dbObject["id"],
+			];
+			$statement = $this->db->execute($query, $parameters);
+			self::assertEx($statement->rowCount() === 1, "Couldn't create edition record");
+
+			$this->db->commit();
+		}
+		catch (Throwable $throwable)
+		{
+			$this->db->rollBack();
+
+			throw $throwable;
+		}
 	}
 
 	public function __invoke(ServerRequestInterface $request): Response

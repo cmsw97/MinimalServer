@@ -5,8 +5,8 @@ namespace Ts;
 class TableInfo
 {
 	// Nunca puede haber cambios.
-	const ID_ERASE = 0;
-	const ID_MODIFY = 1;
+	const ID_DELETION = 0;
+	const ID_EDITION = 1;
 	// -
 	const ID_BRANCH = 2;
 
@@ -17,8 +17,8 @@ class TableInfo
 	 * @var array<string, int>
 	 */
 	private static array $publicTables = [
-		"erase" => self::ID_ERASE,
-		"modify" => self::ID_MODIFY,
+		"deletion" => self::ID_DELETION,
+		//"edition" => self::ID_EDITION,
 
 		"branch" => self::ID_BRANCH,
 	];
@@ -29,8 +29,8 @@ class TableInfo
 	 * @var string[]
 	 */
 	private static array $readOnlyTables = [
-		"erase",
-		"modify"
+		"deletion",
+		"edition"
 	];
 
 	/**

@@ -15,6 +15,8 @@ class DataController
 {
 	private Db $db;
 
+	private int $accountGlobalId;
+
 	private int $idAccount;
 
 	private mixed $requestBody;
@@ -66,14 +68,23 @@ class DataController
 	 */
 	private function getResponseTables(?bool &$outEOF): array
 	{
-		$clientTables = &$this->requestBody["tables"];
+		if (isset($this->requestBody["tables"]))
+		{
+			$requestTables = &$this->requestBody["tables"];
+		}
+		else
+		{
+			// El cliente no mandó tablas, seguramente se está loggeando. Tampoco se le van a responder.
+			$outEOF = true;
+			return [];
+		}
 
 		$result = [];
 		$outEOF = true;
 
 		foreach (TableInfo::getPublicTableNames() as $tableName)
 		{
-			$clientMaxId = $clientTables[$tableName];
+			$clientMaxId = $requestTables[$tableName];
 
 			$table = [];
 			$table["Name"] = $tableName;
@@ -81,7 +92,7 @@ class DataController
 			$table["Rows"] = [];
 
 			// Obtiene los ids que deben tuvieron ediciones y se deben enviar al cliente.
-			$editionIds = $this->getEditionIds($tableName, $clientTables['edition'], self::MAX_RECORDS_PER_TABLE);
+			$editionIds = $this->getEditionIds($tableName, $requestTables['edition'], self::MAX_RECORDS_PER_TABLE);
 
 			// Determina el máximo de registros que pueden obtenerse en esta petición.
 			// Este límite ayuda a mantener bajo el tamaño de lo que se envia al cliente y no saturar la RAM del servidor.
@@ -381,6 +392,7 @@ class DataController
 		$tables = $this->getResponseTables($eof);
 
 		$response = [];
+		$response["AccountGlobalId"] = $this->accountGlobalId;
 		$response["ActionResult"] = $actionResult;
 		$response["EOF"] = $eof;
 		$response["Message"] = null;
@@ -397,7 +409,7 @@ class DataController
 	 * Recibe la request, y si el usuario y contraseña son correctos
 	 * entonces inicializa la propiedad $idAccount y devuelve true.
 	 */
-	private function authenticateUser(ServerRequestInterface $request): bool
+	private function authenticateUser(ServerRequestInterface &$request): bool
 	{
 		$authHeader = explode(" ", $request->getHeader("authorization")[0]);
 
@@ -413,13 +425,15 @@ class DataController
 		$credentials = array_map(fn ($o) => urldecode($o), $credentials);
 
 		$user = $this->db->fetchSingle(
-			"SELECT id, idAccount, password FROM user WHERE name = :name;",
+			"SELECT a.globalId, u.id, u.idAccount, u.password " .
+				"FROM user u INNER JOIN account a ON u.idAccount = a.id WHERE u.name = :name;",
 			[":name" => $credentials[0]],
 			PDO::FETCH_OBJ
 		);
 
 		if ($user && password_verify($credentials[1], $user->password))
 		{
+			$this->accountGlobalId = $user->globalId;
 			$this->idAccount = $user->idAccount;
 			return true;
 		}

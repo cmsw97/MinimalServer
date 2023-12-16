@@ -18,6 +18,7 @@ class TableInfo
 	 */
 	private static array $publicTables = [
 		"deletion" => self::ID_DELETION,
+		"edition" => self::ID_EDITION,
 
 		"branch" => self::ID_BRANCH,
 	];
